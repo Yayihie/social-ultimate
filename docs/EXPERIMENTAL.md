@@ -40,6 +40,45 @@ If you want to wire up a real creator, the Selenium flow you need is
 in `eaabak/instagram-auto-create-account/botAccountCreate.py`. Read
 that file, understand every line, then decide if you really want to.
 
+## Other upstream repos reviewed but not included
+
+These were also considered during the merge. They are referenced here
+for completeness, so you know they exist and why they didn't make it in.
+
+### `SaeidB/insta_create`
+- **Language**: Python 3
+- **What it does**: Uses `sms-activate` / `smshub` paid SMS verification
+  APIs to create Instagram accounts via the real signup endpoint.
+- **Why not included**:
+  - **Costs real money per account** (~$0.50–$3 per SMS, depending on country)
+  - Not a library — it's a single interactive CLI script (`reg.py`)
+  - Requires you to pay for and manage an SMS provider account
+  - Pattern is more restricted than the eaabak approach (which uses free
+    temp email services); if you're going to implement a real creator,
+    start with eaabak and only escalate to SMS-based if you genuinely need
+    phone-verified accounts.
+- **Verdict**: Referenced only. Do not port without understanding the
+  financial and ToS implications.
+
+### `tuberboy/facebook`
+- **Language**: PHP
+- **What it does**: A grab-bag of Facebook automation scripts: account
+  registration, page creation, encrypted password handling, cookie-to-token
+  conversion, token liveness checks, like/follow on pages.
+- **Why not included**:
+  - **PHP**, not Python — porting it would add a whole new runtime
+    dependency with no clear benefit over our existing FastAPI stack
+  - **Even more aggressive ToS violations** than the Instagram bots
+    (Facebook's anti-abuse systems are stricter and faster-banning)
+  - The `facebook_encrypted_password` module ships an RSA implementation
+    meant to mimic Facebook's login encryption — Meta actively detects
+    this and bans the associated accounts
+  - Last commit Feb 2025 — also stale
+- **Verdict**: Referenced only. If you want Facebook automation, use
+  Facebook's **Marketing API** (`/act_{ad_account_id}/` endpoints) or
+  the **Pages API** — both are official, both require App Review, both
+  are the only path that won't get your accounts suspended.
+
 ## How to enable (if you really must)
 
 ```bash

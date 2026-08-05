@@ -3,10 +3,15 @@
 Unified Instagram automation + social media management, built by merging:
 - **[ohld/igbot](https://github.com/ohld/igbot)** — bot patterns (wrapped, gated)
 - **[eaabak/instagram-auto-create-account](https://github.com/eaabak/instagram-auto-create-account)** — account creation patterns (reference only)
+- **[SaeidB/insta_create](https://github.com/SaeidB/insta_create)** — SMS-based account creation (referenced only — paid SMS APIs)
+- **[tuberboy/facebook](https://github.com/tuberboy/facebook)** — Facebook automation scripts (referenced only — PHP, ToS violations)
 - **[mithulix/Social-Media-Dashboard](https://github.com/mithulix/Social-Media-Dashboard)** — dashboard UI patterns
 - **[Katzca/AutoSocial](https://github.com/Katzca/AutoSocial)** — scheduler patterns
 - **[InstaPy/InstaPy](https://github.com/InstaPy/InstaPy)** — quota/feature reference (patterns only; Selenium API surface obsolete)
 - **[tducasse/go-instabot](https://github.com/tducasse/go-instabot)** — archived, not used
+
+See [`docs/EXPERIMENTAL.md`](docs/EXPERIMENTAL.md) for why the non-Instagram
+repos (SaeidB, tuberboy) were referenced rather than ported.
 
 ---
 
