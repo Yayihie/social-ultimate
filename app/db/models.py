@@ -69,6 +69,23 @@ class AutomationJob(Base):
     user = relationship("User", back_populates="automation_jobs")
 
 
+class CreatedAccountRecord(Base):
+    """Track accounts created via the experimental creator modules."""
+    __tablename__ = "created_accounts"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    platform = Column(String, nullable=False, index=True)  # "instagram" or "facebook"
+    username = Column(String, index=True)
+    email = Column(String)
+    password = Column(Text)  # stored plaintext because this is an experimental tool
+    full_name = Column(String)
+    extra = Column(JSON)  # fbid, cookies_file path, etc.
+    success = Column(Boolean, default=False)
+    error = Column(Text)
+    proxy = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class AnalyticsSnapshot(Base):
     __tablename__ = "analytics_snapshots"
     id = Column(Integer, primary_key=True)

@@ -1,79 +1,71 @@
-"""Experimental: automated Instagram account creation.
+"""DEPRECATED stub. The real creator implementations live in:
+  - app.experimental.instagram_creator  (Instagram)
+  - app.experimental.facebook_creator   (Facebook via mobile signup)
 
-Sourced from eaabak/instagram-auto-create-account. Wrapped with hard
-gates so it can never run accidentally. Uses Selenium + a disposable
-email service to sign up accounts.
-
-WARNING: This almost certainly violates Instagram ToS and Meta's anti-
-abuse policies. Accounts created this way are typically banned within
-hours/days. Use for research only.
+This module is kept only for backward compatibility with the original
+test imports. Do not use it for new code.
 """
-from __future__ import annotations
-import time
+from app.experimental.instagram_creator import (  # noqa: F401
+    CreatedAccount, CreateResult, create_instagram_account, create_batch,
+)
+from app.experimental.driver_utils import (  # noqa: F401
+    generate_username as _gen_username,
+    generate_password as _gen_password,
+)
 import random
 import string
-from dataclasses import dataclass
-
-
-@dataclass
-class CreatedAccount:
-    username: str
-    password: str
-    email: str
-    proxy: str | None = None
-    success: bool = False
-    error: str | None = None
 
 
 def generate_username(prefix: str = "user") -> str:
-    """Pattern from eaabak's accountInfoGenerator."""
-    suffix = "".join(random.choices(string.digits, k=4))
-    return f"{prefix}_{suffix}"
+    return _gen_username(prefix)
 
 
 def generate_password(length: int = 12) -> str:
-    chars = string.ascii_letters + string.digits + "!@#$%"
-    return "".join(random.choices(chars, k=length))
+    return _gen_password(length)
 
 
 def generate_user_info() -> dict:
-    """Returns a dict of plausible signup fields."""
-    first = random.choice(["alex", "jordan", "taylor", "morgan", "casey"])
-    last = random.choice(["smith", "jones", "lee", "patel", "garcia"])
+    from app.experimental.driver_utils import (
+        random_full_name, random_username, random_password,
+    )
     return {
-        "first_name": first,
-        "last_name": last,
-        "username": generate_username(first),
-        "password": generate_password(),
-        "email": f"{first}.{last}.{random.randint(100,999)}@example.com",
+        "first_name": random_full_name().split()[0],
+        "last_name": random_full_name().split()[-1],
+        "username": random_username(),
+        "password": random_password(),
+        "email": f"{random_username()}@example.com",
     }
 
 
-class AccountCreator:
-    """Drives a real browser to attempt account creation.
+# Old class kept for backward compat — delegates to the new creator.
+from app.experimental.instagram_creator import create_instagram_account as _create_ig
 
-    Real Selenium flow is in docs/EXPERIMENTAL.md — we deliberately do
-    not ship working signup code so this can't be accidentally weaponized.
-    """
+
+class AccountCreator:
+    """Backward-compat wrapper. New code should call
+    app.experimental.instagram_creator.create_instagram_account or
+    app.experimental.facebook_creator.create_facebook_account directly."""
 
     def __init__(self, driver, proxy: str | None = None):
         self.driver = driver
         self.proxy = proxy
 
-    def create_one(self, info: dict | None = None) -> CreatedAccount:
-        info = info or generate_user_info()
-        # Real implementation lives in docs/EXPERIMENTAL.md as a reference
-        # pattern (sourced from eaabak). This stub refuses to execute.
-        return CreatedAccount(
-            username=info["username"],
-            password=info["password"],
-            email=info["email"],
+    def create_one(self, info=None):
+        from app.experimental.instagram_creator import CreatedAccount as CA
+        return CA(
+            username=info["username"] if info else "unknown",
+            password=info["password"] if info else "unknown",
+            email=info["email"] if info else "unknown",
+            full_name=info.get("full_name", "") if info else "",
             proxy=self.proxy,
             success=False,
-            error="Account creation is intentionally not implemented in the public "
-                  "module. See docs/EXPERIMENTAL.md for the reference Selenium "
-                  "pattern, which you must implement and review yourself.",
+            error=(
+                "AccountCreator.create_one() is deprecated. Use "
+                "app.experimental.instagram_creator.create_instagram_account() "
+                "or app.experimental.facebook_creator.create_facebook_account() "
+                "directly. This wrapper does not run a real driver."
+            ),
         )
 
-    def create_batch(self, count: int) -> list[CreatedAccount]:
+    def create_batch(self, count: int):
         return [self.create_one() for _ in range(count)]

@@ -17,6 +17,7 @@ python-dotenv==1.0.1
 slowapi==0.1.9
 bleach==6.2.0
 requests==2.32.3
+beautifulsoup4==4.15.0
 selenium==4.27.0
 
 # Dev / test

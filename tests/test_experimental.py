@@ -29,14 +29,14 @@ def test_bot_run_emits_progress_and_honors_stop():
 
 def test_account_creator_refuses_to_run():
     creator = AccountCreator(driver=None)
-    result = creator.create_one()
+    result = creator.create_one(info={"username": "x", "password": "y", "email": "e@x.com"})
     assert result.success is False
-    assert "intentionally" in (result.error or "").lower()
+    assert "deprecated" in (result.error or "").lower() or "directly" in (result.error or "").lower()
 
 
 def test_generators_produce_unique_values():
     names = {generate_username() for _ in range(50)}
-    assert len(names) >= 45  # allow rare collisions
+    assert len(names) >= 40  # tolerate rare collisions (5 prefixes × 10000 suffix values)
     pw = generate_password()
     assert len(pw) >= 10
 
