@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Social Ultimate — Instagram Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">SU</span>
+      <span class="title">Social Ultimate</span>
+    </div>
+    <nav id="nav-auth">
+      <button id="btn-login" class="btn">Sign in</button>
+      <button id="btn-register" class="btn btn-secondary">Register</button>
+      <button id="btn-logout" class="btn btn-secondary hidden">Sign out</button>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- Auth view -->
+    <section id="view-auth" class="view">
+      <div class="auth-card">
+        <h2>Welcome</h2>
+        <p class="muted">Sign in or register to manage your Instagram presence.</p>
+        <div class="auth-tabs">
+          <button class="tab active" data-tab="login">Login</button>
+          <button class="tab" data-tab="register">Register</button>
+        </div>
+        <form id="form-login" class="auth-form">
+          <input type="email" name="email" placeholder="Email" required>
+          <input type="password" name="password" placeholder="Password" required>
+          <button type="submit" class="btn">Sign in</button>
+        </form>
+        <form id="form-register" class="auth-form hidden">
+          <input type="email" name="email" placeholder="Email" required>
+          <input type="password" name="password" placeholder="Password (min 8 chars)" minlength="8" required>
+          <button type="submit" class="btn">Create account</button>
+        </form>
+        <p id="auth-error" class="error hidden"></p>
+      </div>
+    </section>
+
+    <!-- Dashboard view -->
+    <section id="view-dashboard" class="view hidden">
+      <div class="grid">
+        <article class="card">
+          <header><h3>Followers</h3></header>
+          <p class="metric" id="m-followers">—</p>
+        </article>
+        <article class="card">
+          <header><h3>Following</h3></header>
+          <p class="metric" id="m-follows">—</p>
+        </article>
+        <article class="card">
+          <header><h3>Posts</h3></header>
+          <p class="metric" id="m-posts">—</p>
+        </article>
+        <article class="card">
+          <header><h3>Profile views (7d)</h3></header>
+          <p class="metric" id="m-views">—</p>
+        </article>
+      </div>
+
+      <section class="panel">
+        <header class="panel-header">
+          <h2>Connected Instagram Accounts</h2>
+          <button id="btn-connect-ig" class="btn">Connect Instagram</button>
+        </header>
+        <div id="accounts-list" class="list">
+          <p class="muted">No accounts connected yet.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-header">
+          <h2>Schedule a Post</h2>
+        </header>
+        <form id="form-schedule" class="form-row">
+          <select id="schedule-account" required>
+            <option value="">Select account...</option>
+          </select>
+          <input type="url" id="schedule-image" placeholder="Public image URL" required>
+          <input type="text" id="schedule-caption" placeholder="Caption">
+          <input type="datetime-local" id="schedule-when" required>
+          <button type="submit" class="btn">Schedule</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <header class="panel-header">
+          <h2>Recent Posts</h2>
+        </header>
+        <div id="posts-list" class="list">
+          <p class="muted">No scheduled posts.</p>
+        </div>
+      </section>
+
+      <section id="experimental-panel" class="panel warning hidden">
+        <header class="panel-header">
+          <h2>⚠ Experimental Automation</h2>
+        </header>
+        <p class="muted">
+          These features use Selenium to drive a real browser and are explicitly
+          against Instagram's Terms of Service. Accounts that use them get banned.
+          Enabled because <code>EXPERIMENTAL_ENABLED=true</code> on the server.
+        </p>
+        <details>
+          <summary>Job types (currently disabled — requires your implementation)</summary>
+          <ul class="muted">
+            <li><code>follow_unfollow</code> — follow users, then unfollow after delay</li>
+            <li><code>like_by_tag</code> — like recent posts under hashtags</li>
+            <li><code>comment</code> — post templated comments</li>
+          </ul>
+        </details>
+        <p class="muted">See <code>docs/EXPERIMENTAL.md</code> for how to wire these up.</p>
+      </section>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

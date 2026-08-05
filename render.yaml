@@ -1,0 +1,28 @@
+databases:
+  - name: social_ultimate_db
+    databaseName: social_ultimate
+    user: postgres
+    plan: free
+
+services:
+  - type: web
+    name: social-ultimate
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: social_ultimate_db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: APP_ENV
+        value: production
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: EXPERIMENTAL_ENABLED
+        value: "false"

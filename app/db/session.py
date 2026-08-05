@@ -1,0 +1,22 @@
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+from app.db.models import Base
+
+# SQLite needs check_same_thread=False; Postgres doesn't care.
+connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+
+engine = create_engine(settings.database_url, connect_args=connect_args, future=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

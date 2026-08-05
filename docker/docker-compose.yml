@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: social_ultimate
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/social_ultimate
+      APP_ENV: development
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../app:/app/app
+      - ../web:/app/web
+
+volumes:
+  pgdata:
