@@ -61,26 +61,37 @@ def test_make_driver_missing_selenium():
 
 
 def test_instagram_creator_email_fetch_failure():
-    """If email-fake.com is down, we get a structured failure, not a crash."""
+    """If mailbox backend is down, we get a structured failure, not a crash."""
     from app.experimental.instagram_creator import create_instagram_account
-    with patch("app.experimental.instagram_creator._get_fake_email",
-               side_effect=RuntimeError("network down")):
-        result = create_instagram_account(headless=True)
+    # ConsoleBackend never fails — we need to test the failure path differently.
+    # Patch make_mailbox to return a broken mailbox.
+    class BrokenMailbox:
+        def get_address(self):
+            raise RuntimeError("network down")
+        def backend_name(self):
+            return "broken"
+        def fetch_messages(self, since_id=None):
+            raise RuntimeError("network down")
+    with patch("app.experimental.instagram_creator.make_mailbox", return_value=BrokenMailbox()):
+        result = create_instagram_account(user_id=999, db_url="sqlite:///./_x.db")
         assert result.account.success is False
         assert "network down" in result.account.error
-        # driver should still exist (even though we returned early before opening it)
-        assert result.driver is not None or result.account.error  # at minimum error captured
+        # identity was still generated
+        assert result.account.username
+        assert result.account.full_name
 
 
 def test_facebook_creator_email_fetch_failure():
-    """If email-fake.com is down, we get a structured failure, not a crash."""
     from app.experimental.facebook_creator import create_facebook_account
-    # Patch in BOTH locations — FB creator imports _get_fake_email into its own namespace
-    with patch("app.experimental.instagram_creator._get_fake_email",
-               side_effect=RuntimeError("network down")), \
-         patch("app.experimental.facebook_creator._get_fake_email",
-               side_effect=RuntimeError("network down")):
-        result = create_facebook_account(headless=True)
+    class BrokenMailbox:
+        def get_address(self):
+            raise RuntimeError("network down")
+        def backend_name(self):
+            return "broken"
+        def fetch_messages(self, since_id=None):
+            raise RuntimeError("network down")
+    with patch("app.experimental.facebook_creator.make_mailbox", return_value=BrokenMailbox()):
+        result = create_facebook_account(user_id=999, db_url="sqlite:///./_x.db")
         assert result.account.success is False
         assert "network down" in result.account.error
         assert result.account.first_name  # identity was generated before email fetch failed

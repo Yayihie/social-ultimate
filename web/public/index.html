@@ -115,7 +115,68 @@
             <li><code>comment</code> — post templated comments</li>
           </ul>
         </details>
-        <p class="muted">See <code>docs/EXPERIMENTAL.md</code> for how to wire these up.</p>
+
+        <div class="panel-sub">
+          <h3>Create accounts (Instagram or Facebook)</h3>
+          <p class="muted">
+            Uses a real Selenium browser + disposable email inbox. Verification
+            codes are visible in the Inbox panel below.
+          </p>
+          <form id="form-create-accounts" class="form-stack">
+            <label>Platform
+              <select id="ca-platform">
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+              </select>
+            </label>
+            <label>Mailbox backend
+              <select id="ca-mailbox">
+                <option value="guerrillamail">Guerrilla Mail (recommended)</option>
+                <option value="emailfake">email-fake.com (legacy, often down)</option>
+                <option value="console">Console (observe only)</option>
+              </select>
+            </label>
+            <label>Count (1–10)
+              <input type="number" id="ca-count" min="1" max="10" value="1">
+            </label>
+            <label>Proxy (optional, http://user:pass@host:port)
+              <input type="text" id="ca-proxy" placeholder="leave empty">
+            </label>
+            <label>Verification timeout (seconds)
+              <input type="number" id="ca-timeout" min="30" max="600" value="180">
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="ca-consent">
+              I understand this violates Instagram/Facebook ToS and may result in
+              account suspension or IP bans. Run anyway.
+            </label>
+            <button type="submit" class="btn">Queue account creation</button>
+          </form>
+        </div>
+
+        <div class="panel-sub">
+          <h3>Created accounts</h3>
+          <button id="btn-refresh-accounts" class="btn btn-secondary btn-small">Refresh</button>
+          <div id="accounts-list-exp" class="list"></div>
+        </div>
+
+        <div class="panel-sub">
+          <h3>Inbox (verification codes)</h3>
+          <div class="row-actions">
+            <button id="btn-refresh-inbox" class="btn btn-secondary btn-small">Refresh inbox</button>
+            <label class="checkbox-row inline">
+              <input type="checkbox" id="inbox-codes-only" checked>
+              Show only messages with codes
+            </label>
+            <select id="inbox-backend-filter">
+              <option value="">All backends</option>
+              <option value="guerrillamail">guerrillamail</option>
+              <option value="emailfake">emailfake</option>
+              <option value="console">console</option>
+            </select>
+          </div>
+          <div id="inbox-list" class="list"></div>
+        </div>
       </section>
     </section>
   </main>

@@ -75,6 +75,14 @@ async function loadDashboard() {
   currentUser = await api("/api/auth/me");
   accounts = await api("/api/instagram/accounts");
 
+  // Show experimental panel only if server has it enabled
+  try {
+    const h = await fetch("/health").then(r => r.json());
+    if (h.experimental_enabled) {
+      $("#experimental-panel").classList.remove("hidden");
+    }
+  } catch {}
+
   const list = $("#accounts-list");
   if (accounts.length === 0) {
     list.innerHTML = '<p class="muted">No accounts connected yet.</p>';
@@ -187,6 +195,104 @@ document.addEventListener("DOMContentLoaded", async () => {
       await loadDashboard();
     } catch (err) { toast(err.message, "error"); }
   });
+
+  // ---- Experimental: account creation ----
+  $("#form-create-accounts").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!$("#ca-consent").checked) {
+      toast("You must acknowledge the ToS warning first", "error");
+      return;
+    }
+    const payload = {
+      platform: $("#ca-platform").value,
+      mailbox_backend: $("#ca-mailbox").value,
+      count: parseInt($("#ca-count").value, 10) || 1,
+      proxy: $("#ca-proxy").value || null,
+      verification_timeout: parseInt($("#ca-timeout").value, 10) || 180,
+      consent_acknowledged: true,
+    };
+    try {
+      const r = await api("/api/experimental/accounts/create",
+        { method: "POST", body: JSON.stringify(payload) });
+      toast(`Queued ${payload.count} ${payload.platform} account(s) via ${payload.mailbox_backend}`);
+      $("#btn-refresh-inbox").click();
+    } catch (err) { toast(err.message, "error"); }
+  });
+
+  $("#btn-refresh-accounts").addEventListener("click", loadExperimentalAccounts);
+  $("#btn-refresh-inbox").addEventListener("click", loadInbox);
+  $("#inbox-backend-filter").addEventListener("change", loadInbox);
+  $("#inbox-codes-only").addEventListener("change", loadInbox);
+
+  async function loadExperimentalAccounts() {
+    const target = $("#accounts-list-exp");
+    try {
+      const rows = await api("/api/experimental/accounts?limit=50");
+      if (!rows.length) {
+        target.innerHTML = '<p class="muted">No accounts yet.</p>';
+        return;
+      }
+      target.innerHTML = rows.map(r => `
+        <div class="list-item">
+          <div>
+            <span class="badge badge-${r.success ? 'posted' : (r.error ? 'failed' : 'pending')}">
+              ${r.success ? 'success' : (r.username === '(pending)' ? 'pending' : 'failed')}
+            </span>
+            <strong>${r.platform}</strong> ·
+            ${r.username || '(none)'} <span class="meta">${r.email || ''}</span>
+            <div class="meta">
+              ${r.mailbox_backend ? 'mailbox: ' + r.mailbox_backend + ' · ' : ''}
+              ${new Date(r.created_at).toLocaleString()}
+              ${r.error ? ' — ' + r.error.slice(0, 120) : ''}
+            </div>
+          </div>
+        </div>
+      `).join("");
+    } catch (e) {
+      target.innerHTML = '<p class="muted">Could not load: ' + e.message + '</p>';
+    }
+  }
+
+  async function loadInbox() {
+    const target = $("#inbox-list");
+    target.innerHTML = '<p class="muted">Loading…</p>';
+    try {
+      const params = new URLSearchParams();
+      if ($("#inbox-codes-only").checked) params.set("codes_only", "true");
+      const backend = $("#inbox-backend-filter").value;
+      if (backend) params.set("backend", backend);
+      const rows = await api("/api/experimental/inbox?" + params.toString());
+      if (!rows.length) {
+        target.innerHTML = '<p class="muted">No inbox messages match your filter.</p>';
+        return;
+      }
+      target.innerHTML = rows.map(m => {
+        const codes = (m.extracted_codes || []).map(c =>
+          `<span class="code-pill">${c}</span>`).join('');
+        const isTick = m.event !== 'message_received';
+        return `
+          <div class="list-item inbox-item ${isTick ? 'event-tick' : ''}">
+            <div>
+              <strong>${m.event === 'message_received' ? '✉' : '⏳'} ${m.subject || '(no subject)'}</strong>
+              <span class="meta">${m.backend} · ${m.email_address}</span>
+              <div class="meta">${m.sender} · ${new Date(m.captured_at).toLocaleString()}</div>
+              ${codes ? '<div style="margin-top:0.4rem">' + codes + '</div>' : ''}
+              ${m.body_excerpt ? '<div class="body">' + escapeHtml(m.body_excerpt) + '</div>' : ''}
+            </div>
+          </div>
+        `;
+      }).join("");
+      loadExperimentalAccounts();
+    } catch (e) {
+      target.innerHTML = '<p class="muted">Could not load: ' + e.message + '</p>';
+    }
+  }
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+  }
 
   // Initial load
   if (token) {

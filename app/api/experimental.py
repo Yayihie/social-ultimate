@@ -1,11 +1,11 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from app.db.session import get_db
-from app.db.models import User, AutomationJob, CreatedAccountRecord
+from app.db.session import get_db, SessionLocal
+from app.db.models import User, AutomationJob, CreatedAccountRecord, InboxSnapshot
 from app.core.security import get_current_user
 from app.core.experimental_gate import experimental_endpoint, require_explicit_consent
 from app.core.config import settings
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/experimental", tags=["experimental"])
 
 
 class BotJobIn(BaseModel):
-    job_type: str  # follow_unfollow, like_by_tag, comment
+    job_type: str
     target: str
     config: dict = {}
     consent_acknowledged: bool = False
@@ -24,7 +24,9 @@ class AccountCreateIn(BaseModel):
     count: int = 1
     proxy: Optional[str] = None
     consent_acknowledged: bool = False
-    platform: str = "instagram"  # "instagram" or "facebook"
+    platform: str = "instagram"
+    mailbox_backend: str = "guerrillamail"  # guerrillamail / emailfake / console
+    verification_timeout: int = 180
 
 
 class JobOut(BaseModel):
@@ -44,50 +46,54 @@ class CreatedAccountOut(BaseModel):
     success: bool
     error: Optional[str] = None
     proxy: Optional[str] = None
+    mailbox_backend: Optional[str] = None
+    mailbox_address: Optional[str] = None
     created_at: datetime
+
+
+class InboxSnapshotOut(BaseModel):
+    id: int
+    backend: str
+    email_address: str
+    sender: Optional[str] = None
+    subject: Optional[str] = None
+    body_excerpt: Optional[str] = None
+    body_full: Optional[str] = None
+    extracted_codes: list = []
+    message_id: Optional[str] = None
+    captured_at: datetime
+    event: str
 
 
 # ---- Background task wrappers ----
 
-def _run_instagram_creator(user_id: int, count: int, proxy: Optional[str], db_url: str):
-    """Run in BackgroundTask. Re-opens its own DB session."""
-    from app.db.session import SessionLocal
+def _run_instagram_creator(user_id: int, count: int, proxy: Optional[str],
+                           mailbox_backend: str, verification_timeout: int,
+                           db_url: str):
     from app.experimental.instagram_creator import create_batch
-
     db = SessionLocal()
     try:
-        results = create_batch(count=count, proxy=proxy)
+        results = create_batch(count=count, user_id=user_id, db_url=db_url,
+                               proxy=proxy, mailbox_backend=mailbox_backend,
+                               verification_timeout=verification_timeout)
+        # Records are already saved during the run (one per attempt).
         for r in results:
             try:
                 r.driver.quit()
             except Exception:
                 pass
-            acc = r.account
-            rec = CreatedAccountRecord(
-                user_id=user_id,
-                platform="instagram",
-                username=acc.username,
-                email=acc.email,
-                password=acc.password,
-                full_name=acc.full_name,
-                extra={"cookies_file": acc.cookies_file},
-                success=acc.success,
-                error=acc.error,
-                proxy=acc.proxy,
-            )
-            db.add(rec)
-        db.commit()
     finally:
         db.close()
 
 
-def _run_facebook_creator(user_id: int, count: int, proxy: Optional[str], db_url: str):
-    from app.db.session import SessionLocal
+def _run_facebook_creator(user_id: int, count: int, proxy: Optional[str],
+                          mailbox_backend: str, db_url: str):
     from app.experimental.facebook_creator import create_batch
-
+    from app.db.models import CreatedAccountRecord
     db = SessionLocal()
     try:
-        results = create_batch(count=count, proxy=proxy)
+        results = create_batch(count=count, user_id=user_id, db_url=db_url,
+                               proxy=proxy, mailbox_backend=mailbox_backend)
         for r in results:
             try:
                 r.driver.quit()
@@ -106,6 +112,8 @@ def _run_facebook_creator(user_id: int, count: int, proxy: Optional[str], db_url
                     "cookies_file": acc.cookies_file,
                     "birthday": acc.birthday,
                     "gender": acc.gender,
+                    "mailbox_backend": acc.mailbox_backend,
+                    "mailbox_address": acc.mailbox_address,
                 },
                 success=acc.success,
                 error=acc.error,
@@ -125,11 +133,8 @@ def create_bot_job(data: BotJobIn, user: User = Depends(get_current_user),
                    db: Session = Depends(get_db)):
     require_explicit_consent(data.consent_acknowledged)
     job = AutomationJob(
-        user_id=user.id,
-        job_type=data.job_type,
-        target=data.target,
-        config=data.config,
-        status="queued",
+        user_id=user.id, job_type=data.job_type,
+        target=data.target, config=data.config, status="queued",
     )
     db.add(job)
     db.commit()
@@ -143,15 +148,8 @@ def create_bot_job(data: BotJobIn, user: User = Depends(get_current_user),
 def create_accounts(data: AccountCreateIn, user: User = Depends(get_current_user),
                     db: Session = Depends(get_db),
                     background_tasks: BackgroundTasks = None):
-    """Queue account creation in a background task.
-
-    Returns the list of newly-created account records AFTER background
-    completes — but to keep API responsive, this returns immediately
-    and the client polls GET /api/experimental/accounts to see results.
-
-    For synchronous (blocking) behavior, query ?wait=true — still
-    experimental and not recommended for count > 1.
-    """
+    """Queue account creation. Poll /api/experimental/accounts for results,
+    /api/experimental/inbox for verification codes."""
     require_explicit_consent(data.consent_acknowledged)
     if data.count < 1 or data.count > 10:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -159,21 +157,30 @@ def create_accounts(data: AccountCreateIn, user: User = Depends(get_current_user
     if data.platform not in ("instagram", "facebook"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="platform must be 'instagram' or 'facebook'")
+    if data.mailbox_backend not in ("guerrillamail", "emailfake", "console"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="mailbox_backend must be guerrillamail, emailfake, or console")
 
     if data.platform == "instagram":
         background_tasks.add_task(
-            _run_instagram_creator, user.id, data.count, data.proxy, settings.database_url
+            _run_instagram_creator, user.id, data.count, data.proxy,
+            data.mailbox_backend, data.verification_timeout,
+            settings.database_url,
         )
     else:
         background_tasks.add_task(
-            _run_facebook_creator, user.id, data.count, data.proxy, settings.database_url
+            _run_facebook_creator, user.id, data.count, data.proxy,
+            data.mailbox_backend, settings.database_url,
         )
 
     return [CreatedAccountOut(
         id=0, platform=data.platform, username="(pending)",
         email="(pending)", full_name=None, success=False,
-        error="Background task queued — poll GET /api/experimental/accounts for results",
-        proxy=data.proxy, created_at=datetime.utcnow(),
+        error=f"Background task queued with {data.mailbox_backend} mailbox. "
+              "Poll /api/experimental/accounts for results and "
+              "/api/experimental/inbox for verification codes.",
+        proxy=data.proxy, mailbox_backend=data.mailbox_backend,
+        mailbox_address="(pending)", created_at=datetime.utcnow(),
     )]
 
 
@@ -189,8 +196,96 @@ def list_created_accounts(platform: Optional[str] = None,
     return [CreatedAccountOut(
         id=r.id, platform=r.platform, username=r.username or "",
         email=r.email or "", full_name=r.full_name, success=r.success,
-        error=r.error, proxy=r.proxy, created_at=r.created_at,
+        error=r.error, proxy=r.proxy,
+        mailbox_backend=(r.extra or {}).get("mailbox_backend"),
+        mailbox_address=(r.extra or {}).get("mailbox_address") or r.email,
+        created_at=r.created_at,
     ) for r in rows]
+
+
+@router.get("/accounts/{account_id}", response_model=CreatedAccountOut)
+@experimental_endpoint()
+def get_account(account_id: int, user: User = Depends(get_current_user),
+                db: Session = Depends(get_db)):
+    r = db.query(CreatedAccountRecord).filter(
+        CreatedAccountRecord.id == account_id,
+        CreatedAccountRecord.user_id == user.id,
+    ).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Not found")
+    return CreatedAccountOut(
+        id=r.id, platform=r.platform, username=r.username or "",
+        email=r.email or "", full_name=r.full_name, success=r.success,
+        error=r.error, proxy=r.proxy,
+        mailbox_backend=(r.extra or {}).get("mailbox_backend"),
+        mailbox_address=(r.extra or {}).get("mailbox_address") or r.email,
+        created_at=r.created_at,
+    )
+
+
+# ---- Inbox visibility endpoints ----
+
+@router.get("/inbox", response_model=list[InboxSnapshotOut])
+@experimental_endpoint()
+def list_inbox_snapshots(
+    backend: Optional[str] = None,
+    account_id: Optional[int] = None,
+    codes_only: bool = Query(False, description="Only show messages with extracted codes"),
+    limit: int = Query(100, le=500),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """View captured inbox messages and extracted verification codes.
+
+    Filterable by:
+    - backend (guerrillamail / emailfake / console)
+    - account_id (linked CreatedAccountRecord)
+    - codes_only (only show messages where we extracted verification codes)
+    """
+    q = db.query(InboxSnapshot).filter(InboxSnapshot.user_id == user.id)
+    if backend:
+        q = q.filter(InboxSnapshot.backend == backend)
+    if account_id:
+        q = q.filter(InboxSnapshot.account_record_id == account_id)
+    rows = q.order_by(InboxSnapshot.captured_at.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        codes = r.extracted_codes or []
+        if codes_only and not codes:
+            continue
+        out.append(InboxSnapshotOut(
+            id=r.id, backend=r.backend or "", email_address=r.email_address or "",
+            sender=r.sender, subject=r.subject, body_excerpt=r.body_excerpt,
+            body_full=r.body_full, extracted_codes=codes,
+            message_id=r.message_id, captured_at=r.captured_at, event=r.event,
+        ))
+    return out
+
+
+@router.get("/inbox/latest-codes")
+@experimental_endpoint()
+def latest_codes(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Quick view: last 20 messages that had extracted codes."""
+    rows = db.query(InboxSnapshot).filter(
+        InboxSnapshot.user_id == user.id,
+        InboxSnapshot.event == "message_received",
+    ).order_by(InboxSnapshot.captured_at.desc()).limit(50).all()
+    out = []
+    for r in rows:
+        codes = r.extracted_codes or []
+        if not codes:
+            continue
+        out.append({
+            "id": r.id,
+            "captured_at": r.captured_at.isoformat(),
+            "backend": r.backend,
+            "email_address": r.email_address,
+            "sender": r.sender,
+            "subject": r.subject,
+            "codes": codes,
+            "account_id": r.account_record_id,
+        })
+    return out[:20]
 
 
 @router.get("/bot/jobs", response_model=list[JobOut])

@@ -79,11 +79,33 @@ class CreatedAccountRecord(Base):
     email = Column(String)
     password = Column(Text)  # stored plaintext because this is an experimental tool
     full_name = Column(String)
-    extra = Column(JSON)  # fbid, cookies_file path, etc.
+    extra = Column(JSON)  # fbid, cookies_file path, mailbox backend, sid_token, etc.
     success = Column(Boolean, default=False)
     error = Column(Text)
     proxy = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class InboxSnapshot(Base):
+    """Captured inbox state during account creation.
+
+    One row per poll. Lets you see what we received, extract codes, and
+    debug why verification failed.
+    """
+    __tablename__ = "inbox_snapshots"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    account_record_id = Column(Integer, ForeignKey("created_accounts.id"), nullable=True)
+    backend = Column(String, index=True)  # "guerrillamail", "emailfake", "console"
+    email_address = Column(String, index=True)
+    sender = Column(String)
+    subject = Column(String)
+    body_excerpt = Column(Text)
+    body_full = Column(Text)
+    extracted_codes = Column(JSON)  # list[str]
+    message_id = Column(String)
+    captured_at = Column(DateTime, default=datetime.utcnow, index=True)
+    event = Column(String, default="message_received")  # message_received, poll_tick, poll_error, no_mail
 
 
 class AnalyticsSnapshot(Base):

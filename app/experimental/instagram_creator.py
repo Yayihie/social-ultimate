@@ -1,35 +1,39 @@
 """Instagram account creator.
 
-Ported from eaabak/instagram-auto-create-account. Uses Selenium + a
-disposable email service to drive instagram.com/accounts/emailsignup.
+Ported from eaabak/instagram-auto-create-account. Uses Selenium +
+a disposable email service (default: GuerrillaMail JSON API).
 
 Flow:
-  1. Open signup page
-  2. Generate plausible identity (name, username, password)
+  1. Acquire a disposable mailbox (GuerrillaMail by default)
+  2. Open instagram.com/accounts/emailsignup/
   3. Fill email/fullname/username/password fields
   4. Submit form
   5. Fill birthday (required step)
-  6. Poll disposable inbox for verification code
+  6. Poll mailbox for Instagram's confirmation code (saved to DB)
   7. Enter code
-  8. Save credentials to CreatedAccount
+  8. Save cookies + credentials to CreatedAccount
 
-This module is gated by EXPERIMENTAL_ENABLED + consent_acknowledged.
+Every step emits a progress event. Polling ticks and any received
+message are persisted to the InboxSnapshot table so you can see
+exactly what code arrived (or didn't).
 """
 from __future__ import annotations
-import re
 import time
+import pickle
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from app.experimental.driver_utils import (
     DriverOptions, make_driver, random_full_name, random_username,
     random_password, random_birthday, human_delay, safe_send,
 )
+from app.experimental.mailbox import (
+    Mailbox, make_mailbox, wait_for_code, InboxMessage,
+)
 
 
 SIGNUP_URL = "https://www.instagram.com/accounts/emailsignup/"
-INBOX_URL_BASE = "https://email-fake.com/"
 
 
 @dataclass
@@ -42,76 +46,85 @@ class CreatedAccount:
     success: bool = False
     error: Optional[str] = None
     cookies_file: Optional[str] = None
+    mailbox_backend: str = ""
+    mailbox_address: str = ""
+    extracted_codes: list = None  # what codes we saw in the inbox
+    inbox_message_id: Optional[str] = None
+
+    def __post_init__(self):
+        if self.extracted_codes is None:
+            self.extracted_codes = []
 
 
 @dataclass
 class CreateResult:
     account: CreatedAccount
-    driver: object  # the selenium driver in its final state (caller closes)
+    driver: object
+    mailbox: Optional[Mailbox] = None
 
 
-def _get_fake_email() -> str:
-    """Fetch a disposable email from email-fake.com.
+def _capture_inbox_snapshot(
+    db, user_id: int, account_record_id: Optional[int],
+    mailbox: Mailbox, message: InboxMessage,
+) -> None:
+    """Persist an inbox message + extracted codes to the InboxSnapshot table."""
+    from app.db.models import InboxSnapshot
+    snap = InboxSnapshot(
+        user_id=user_id,
+        account_record_id=account_record_id,
+        backend=mailbox.backend_name(),
+        email_address=mailbox.get_address(),
+        sender=message.sender,
+        subject=message.subject,
+        body_excerpt=message.body[:500] if message.body else "",
+        body_full=message.body or "",
+        extracted_codes=message.extract_codes(),
+        message_id=message.message_id,
+        event="message_received",
+    )
+    db.add(snap)
+    db.commit()
 
-    Returns the email string, or raises RuntimeError if the service is down.
-    """
-    import requests
-    from bs4 import BeautifulSoup
-    try:
-        r = requests.get(INBOX_URL_BASE, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.content, "html.parser")
-        mail_el = soup.find("span", {"id": "email_ch_text"})
-        if not mail_el or not mail_el.contents:
-            raise RuntimeError("email-fake.com returned no email element")
-        # contents is e.g. ['foo123@bar.com']
-        email = mail_el.contents[0]
-        if not isinstance(email, str):
-            email = str(email)
-        return email
-    except Exception as e:
-        raise RuntimeError(f"Could not get disposable email: {e}") from e
 
-
-def _wait_for_instagram_code(mail_name: str, domain: str, driver, timeout: int = 180) -> str:
-    """Open the inbox in a new tab, poll for an Instagram confirmation code."""
-    inbox_url = f"{INBOX_URL_BASE}{domain}/{mail_name}"
-    driver.execute_script("window.open('');")
-    driver.switch_to.window(driver.window_handles[-1])
-    driver.get(inbox_url)
-    human_delay(1.0, 2.0)
-    deadline = time.time() + timeout
-    code = ""
-    while time.time() < deadline:
-        title = driver.title or ""
-        # email-fake.com sets the title to the email subject; the IG code is in it
-        m = re.search(r"\b(\d{6})\b", title)
-        if m:
-            code = m.group(1)
-            break
-        driver.refresh()
-        human_delay(1.5, 3.0)
-    driver.close()
-    driver.switch_to.window(driver.window_handles[0])
-    if not code:
-        raise RuntimeError(f"Timed out after {timeout}s waiting for Instagram code in {mail_name}@{domain}")
-    return code
+def _capture_poll_tick(db, user_id: int, account_record_id: Optional[int],
+                       mailbox: Mailbox, event: str = "poll_tick",
+                       error: Optional[str] = None) -> None:
+    """Persist a polling tick (with no message) for debugging."""
+    from app.db.models import InboxSnapshot
+    snap = InboxSnapshot(
+        user_id=user_id,
+        account_record_id=account_record_id,
+        backend=mailbox.backend_name(),
+        email_address=mailbox.get_address(),
+        event=event,
+        body_excerpt=error,
+    )
+    db.add(snap)
+    db.commit()
 
 
 def create_instagram_account(
+    user_id: int,
+    db_url: str,
     driver_options: Optional[DriverOptions] = None,
     headless: bool = True,
     proxy: Optional[str] = None,
+    mailbox_backend: str = "guerrillamail",
+    verification_timeout: int = 180,
 ) -> CreateResult:
-    """Create one Instagram account. Returns CreateResult; caller closes driver.
+    """Create one Instagram account. Caller is responsible for closing driver.
 
-    driver_options: pass a pre-configured DriverOptions for full control,
-        or leave None to use defaults (headless + your settings.proxy).
-    headless: shorthand override for non-headless run.
-    proxy: shorthand override for proxy URL.
+    user_id / db_url: passed in so we can persist inbox snapshots during polling.
+    mailbox_backend: "guerrillamail" (default), "emailfake", or "console".
+    verification_timeout: seconds to wait for the Instagram code email.
     """
+    from app.db.session import SessionLocal
+
     opts = driver_options or DriverOptions(headless=headless, proxy=proxy)
     driver = make_driver(opts)
+    mailbox = make_mailbox(mailbox_backend)
+    db = SessionLocal()
+
     info = {
         "email": "",
         "full_name": random_full_name(),
@@ -119,7 +132,9 @@ def create_instagram_account(
         "password": random_password(),
     }
 
-    def _fail(error: str) -> CreateResult:
+    def _fail(error: str, captured_codes: list = None) -> CreateResult:
+        if captured_codes is None:
+            captured_codes = []
         return CreateResult(
             account=CreatedAccount(
                 username=info["username"],
@@ -129,15 +144,62 @@ def create_instagram_account(
                 proxy=opts.proxy,
                 success=False,
                 error=error,
+                mailbox_backend=mailbox.backend_name(),
+                mailbox_address=info.get("email", ""),
+                extracted_codes=captured_codes,
             ),
             driver=driver,
+            mailbox=mailbox,
         )
 
+    # 1. Acquire disposable email
     try:
-        # 1. Get disposable email
-        info["email"] = _get_fake_email()
+        info["email"] = mailbox.get_address()
     except Exception as e:
-        return _fail(str(e))
+        db.close()
+        return _fail(f"Could not acquire email from {mailbox_backend}: {e}")
+
+    # Create the CreatedAccountRecord up front so we can link inbox snapshots
+    from app.db.models import CreatedAccountRecord
+    rec = CreatedAccountRecord(
+        user_id=user_id,
+        platform="instagram",
+        username=info["username"],
+        email=info["email"],
+        password=info["password"],
+        full_name=info["full_name"],
+        extra={"mailbox_backend": mailbox.backend_name(),
+               "mailbox_address": info["email"]},
+        success=False,
+        error=None,
+        proxy=opts.proxy,
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    record_id = rec.id
+
+    captured_codes: list[str] = []
+    captured_message: Optional[InboxMessage] = None
+
+    def _on_poll_event(payload: dict) -> None:
+        nonlocal captured_message
+        try:
+            if payload.get("event") == "message_received":
+                # We got a real email — fetch full message and persist
+                msgs = mailbox.fetch_messages(since_id=None)
+                msg = next((m for m in msgs
+                            if m.message_id == payload.get("message_id")), None)
+                if msg:
+                    captured_codes.extend(msg.extract_codes())
+                    captured_message = msg
+                    _capture_inbox_snapshot(db, user_id, record_id, mailbox, msg)
+            else:
+                _capture_poll_tick(db, user_id, record_id, mailbox,
+                                   event=payload.get("event", "poll_tick"),
+                                   error=payload.get("error"))
+        except Exception:
+            pass  # never let DB writes kill the polling loop
 
     try:
         # 2. Open signup page
@@ -153,7 +215,7 @@ def create_instagram_account(
             pass
 
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support.ui import WebDriverWait, Select
         from selenium.webdriver.support import expected_conditions as EC
 
         def _find(name: str, timeout: int = 20):
@@ -181,7 +243,7 @@ def create_instagram_account(
         safe_send(password_field, info["password"])
         human_delay(0.6, 1.2)
 
-        # 7. Submit — try common selectors (Instagram rotates these)
+        # 7. Submit
         submitted = False
         for xp in [
             "//*[@id='react-root']/section/main/div/div/div[1]/div/form/div[7]/div/button",
@@ -195,50 +257,80 @@ def create_instagram_account(
             except Exception:
                 continue
         if not submitted:
-            return _fail("Could not click Sign up button (all selectors failed)")
+            rec.error = "Could not click Sign up button"
+            db.commit()
+            return _fail(rec.error)
         human_delay(4.0, 6.0)
 
-        # 8. Birthday dropdowns (Instagram now requires this)
+        # 8. Birthday dropdowns
         year, month, day = random_birthday()
         try:
             selects = driver.find_elements(By.TAG_NAME, "select")
             if len(selects) >= 3:
-                from selenium.webdriver.support.ui import Select
                 Select(selects[0]).select_by_value(str(month))
                 human_delay(0.3, 0.6)
                 Select(selects[1]).select_by_value(str(day))
                 human_delay(0.3, 0.6)
                 Select(selects[2]).select_by_value(str(year))
                 human_delay(0.4, 0.8)
-                # Submit
                 for xp in [
                     "//*[@id='react-root']/section/main/div/div/div[1]/div/div[6]/button",
                     "//button[@type='submit']",
                     "//div[@role='button'][contains(., 'Next')]",
                 ]:
                     try:
-                        WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, xp))).click()
+                        WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.XPATH, xp))).click()
                         break
                     except Exception:
                         continue
                 human_delay(3.0, 5.0)
             else:
-                return _fail("Birthday select dropdowns not found — Instagram flow may have changed")
+                rec.error = "Birthday selects not found (Instagram flow may have changed)"
+                db.commit()
+                return _fail(rec.error, captured_codes)
         except Exception as e:
-            return _fail(f"Birthday step failed: {e}")
+            rec.error = f"Birthday step failed: {e}"
+            db.commit()
+            return _fail(rec.error, captured_codes)
 
-        # 9. Wait for verification code email
+        # 9. Poll mailbox for IG code
         try:
-            mail_name, domain = info["email"].split("@")
-        except ValueError:
-            return _fail(f"Bad email format: {info['email']}")
-
-        try:
-            code = _wait_for_instagram_code(mail_name, domain, driver, timeout=180)
+            msg = wait_for_code(
+                mailbox,
+                sender_filter="instagram",
+                timeout_seconds=verification_timeout,
+                poll_interval=4.0,
+                progress_callback=_on_poll_event,
+            )
         except Exception as e:
-            return _fail(str(e))
+            rec.error = f"Mailbox polling crashed: {e}"
+            db.commit()
+            return _fail(rec.error, captured_codes)
 
-        # 10. Enter the code
+        if msg is None:
+            rec.error = (
+                f"No Instagram email received after {verification_timeout}s. "
+                f"Mailbox: {mailbox.get_address()} ({mailbox.backend_name()}). "
+                f"Codes seen in any messages: {captured_codes or 'none'}."
+            )
+            db.commit()
+            db.close()
+            return _fail(rec.error, captured_codes)
+
+        codes = msg.extract_codes()
+        if not codes:
+            rec.error = (
+                f"Received Instagram email but no numeric code found. "
+                f"Subject: {msg.subject!r}. Body excerpt: {msg.body[:200]!r}."
+            )
+            db.commit()
+            db.close()
+            return _fail(rec.error, captured_codes)
+
+        code = codes[0]  # take the first plausible code
+
+        # 10. Enter code
         try:
             code_field = _find("email_confirmation_code", timeout=15)
             safe_send(code_field, code)
@@ -246,18 +338,34 @@ def create_instagram_account(
             from selenium.webdriver.common.keys import Keys
             code_field.send_keys(Keys.ENTER)
         except Exception as e:
-            return _fail(f"Could not enter verification code: {e}")
+            rec.error = f"Could not enter code {code}: {e}"
+            db.commit()
+            db.close()
+            return _fail(rec.error, captured_codes)
 
         human_delay(3.0, 5.0)
 
-        # 11. Save cookies for later login
+        # 11. Save cookies
         cookies_file = f"/tmp/ig_cookies_{info['username']}.pkl"
         try:
-            import pickle
             with open(cookies_file, "wb") as f:
                 pickle.dump(driver.get_cookies(), f)
         except Exception:
             cookies_file = None
+
+        # Update record with success
+        rec.success = True
+        rec.extra = {
+            **(rec.extra or {}),
+            "cookies_file": cookies_file,
+            "extracted_codes": codes,
+            "code_used": code,
+            "sender": msg.sender,
+            "subject": msg.subject,
+            "message_id": msg.message_id,
+        }
+        db.commit()
+        db.close()
 
         return CreateResult(
             account=CreatedAccount(
@@ -267,24 +375,31 @@ def create_instagram_account(
                 full_name=info["full_name"],
                 proxy=opts.proxy,
                 success=True,
-                error=None,
                 cookies_file=cookies_file,
+                mailbox_backend=mailbox.backend_name(),
+                mailbox_address=info["email"],
+                extracted_codes=codes,
+                inbox_message_id=msg.message_id,
             ),
             driver=driver,
+            mailbox=mailbox,
         )
 
     except Exception as e:
-        return _fail(f"Unexpected error: {e}")
+        try:
+            rec.error = f"Unexpected error: {e}"
+            db.commit()
+        except Exception:
+            pass
+        db.close()
+        return _fail(f"Unexpected error: {e}", captured_codes)
 
 
-def create_batch(count: int, **kwargs) -> list[CreateResult]:
-    """Create multiple accounts sequentially. Each account uses its own driver.
-
-    WARNING: Creates `count` separate Chrome browser sessions. Use sparingly.
-    """
+def create_batch(count: int, user_id: int, db_url: str, **kwargs) -> list[CreateResult]:
+    """Create multiple accounts sequentially."""
     results = []
     for _ in range(count):
-        result = create_instagram_account(**kwargs)
+        result = create_instagram_account(user_id=user_id, db_url=db_url, **kwargs)
         results.append(result)
         try:
             result.driver.quit()

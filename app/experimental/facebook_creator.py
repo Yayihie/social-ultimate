@@ -35,7 +35,7 @@ from app.experimental.driver_utils import (
     DriverOptions, make_driver, random_first_name, random_last_name,
     random_password, random_birthday, human_delay, safe_send,
 )
-from app.experimental.instagram_creator import _get_fake_email  # reuse
+from app.experimental.mailbox import make_mailbox, Mailbox
 
 
 SIGNUP_URL = "https://m.facebook.com/reg/"
@@ -54,23 +54,30 @@ class CreatedFacebookAccount:
     error: Optional[str] = None
     cookies_file: Optional[str] = None
     fbid: Optional[str] = None
+    mailbox_backend: str = ""
+    mailbox_address: str = ""
 
 
 @dataclass
 class FacebookCreateResult:
     account: CreatedFacebookAccount
     driver: object
+    mailbox: Optional[Mailbox] = None
 
 
 def create_facebook_account(
+    user_id: int,
+    db_url: str,
     driver_options: Optional[DriverOptions] = None,
     headless: bool = True,
     proxy: Optional[str] = None,
     gender: Optional[str] = None,  # "male" / "female" — random if None
+    mailbox_backend: str = "guerrillamail",
 ) -> FacebookCreateResult:
     """Create one Facebook account via mobile signup flow."""
     opts = driver_options or DriverOptions(headless=headless, proxy=proxy)
     driver = make_driver(opts)
+    mailbox = make_mailbox(mailbox_backend)
     info = {
         "first_name": random_first_name(),
         "last_name": random_last_name(),
@@ -91,12 +98,15 @@ def create_facebook_account(
                 proxy=opts.proxy,
                 success=False,
                 error=error,
+                mailbox_backend=mailbox.backend_name(),
+                mailbox_address=info.get("email", ""),
             ),
             driver=driver,
+            mailbox=mailbox,
         )
 
     try:
-        info["email"] = _get_fake_email()
+        info["email"] = mailbox.get_address()
     except Exception as e:
         return _fail(str(e))
 
@@ -269,11 +279,11 @@ def create_facebook_account(
         return _fail(f"Unexpected error: {e}")
 
 
-def create_batch(count: int, **kwargs) -> list[FacebookCreateResult]:
+def create_batch(count: int, user_id: int, db_url: str, **kwargs) -> list[FacebookCreateResult]:
     """Create multiple Facebook accounts sequentially."""
     results = []
     for _ in range(count):
-        result = create_facebook_account(**kwargs)
+        result = create_facebook_account(user_id=user_id, db_url=db_url, **kwargs)
         results.append(result)
         try:
             result.driver.quit()

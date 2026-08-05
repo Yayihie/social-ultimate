@@ -8,20 +8,18 @@ test imports. Do not use it for new code.
 from app.experimental.instagram_creator import (  # noqa: F401
     CreatedAccount, CreateResult, create_instagram_account, create_batch,
 )
-from app.experimental.driver_utils import (  # noqa: F401
-    generate_username as _gen_username,
-    generate_password as _gen_password,
+from app.experimental.driver_utils import (
+    generate_username as _driver_gen_username,
+    generate_password as _driver_gen_password,
 )
-import random
-import string
 
 
 def generate_username(prefix: str = "user") -> str:
-    return _gen_username(prefix)
+    return _driver_gen_username(prefix)
 
 
 def generate_password(length: int = 12) -> str:
-    return _gen_password(length)
+    return _driver_gen_password(length)
 
 
 def generate_user_info() -> dict:
